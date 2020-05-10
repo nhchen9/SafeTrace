@@ -17,6 +17,7 @@ use sgx_types::marker::ContiguousMemory;
 use std::untrusted::fs::File;
 use std::io::{Read, Write, self};
 use sgx_types::{sgx_status_t, sgx_sealed_data_t};
+use std::time::{Duration, SystemTime};
 
 pub const DATAFILE: &str = "data.sealed";
 pub const TOVERLAP: i32 = 300;             // 5min * 60s minimum overlap
@@ -99,7 +100,7 @@ pub fn recover_sealeddata_for_serializable(sealed_log: * mut u8, sealed_log_size
     // println!("Length of encoded slice: {}", encoded_slice.len());
     // println!("Encoded slice: {:?}", encoded_slice);
     
-    let data: HashMap<String, Vec<GeolocationTime>> = serde_json::from_slice(encoded_slice).unwrap();
+    let data: HashMap<tuple here, Vec<GeolocationTime>> = serde_json::from_slice(encoded_slice).unwrap();
 
     Ok(data)
 }
@@ -265,4 +266,156 @@ pub fn find_match_internal(
     let encrypted_output = encrypt(array_u8_results, dhKey)?;
 
     Ok(encrypted_output)
+}
+
+
+
+// NEW HEATMAP FUNCTIONS:
+// ALMOST CERTAINLY DON'T WORK! RUIHAO SAVE ME
+pub const HEATMAP_TIMEFRAME: u16 = 14;
+pub const TIMEFRAME_GRANULARITY: u16 = 10;
+pub const LONG_MIN: f64;
+pub const LONG_MAX: f64;
+pub const LAT_MIN: f64;
+pub const LAT_MAX: f64;
+pub const GPS_SIDE_LENGTH: u16 = .01;
+
+pub const HEATMAP_BIN_NUM = HEATMAP_TIMEFRAME * 24 * 60 / TIMEFRAME_GRANULARITY * (LONG_MAX-LONG_MIN) * (LAT_MAX-LAT_MIN) / GPS_SIDE_LENGTH / GPS_SIDE_LENGTH;
+pub const HEATMAP_SIZE: usize = 2 * HEATMAP_BIN_NUM;
+
+HEATMAP_COUNT_THRESHOLD = 2;
+
+pub fn recover_heatmapdata_for_serializable(sealed_log: * mut u8, sealed_log_size: u32) -> HashMap<(u16, u16, u16), Vec<GeolocationTime>>, Error> {
+    let sealed_data = from_sealed_log_for_slice::<u8>(sealed_log, sealed_log_size).ok_or(Error::SliceError)?;
+    let unsealed_data = sealed_data.unseal_data().map_err(|err| Error::UnsealError(err))?;
+    let encoded_slice = unsealed_data.get_decrypt_txt();
+    
+    let data: HashMap<(u16, u16, u16), u16 = serde_json::from_slice(encoded_slice).unwrap();
+    Ok(data)
+}
+
+pub fn create_heatmapdata_for_serializable(data: HashMap<(u16, u16, u16), u16, sealed_log_out: &mut [u8; SEAL_LOG_SIZE]) -> enigma_types::EnclaveReturn {
+
+    let encoded_vec = serde_json::to_vec(&data).unwrap();
+    let encoded_slice = encoded_vec.as_slice();
+    // println!("Length of encoded slice: {}", encoded_slice.len());
+    // println!("Encoded slice: {:?}", encoded_slice);
+
+    let aad: [u8; 0] = [0_u8; 0];
+    let result = SgxSealedData::<[u8]>::seal_data(&aad, encoded_slice);
+    let sealed_data = match result {
+        Ok(x) => x,
+        Err(ret) => { return EnclaveReturn::SgxError; },
+    };
+
+    let sealed_log = sealed_log_out.as_mut_ptr();
+
+    let opt = to_sealed_log_for_slice(&sealed_data, sealed_log, SEAL_LOG_SIZE as u32);
+    if opt.is_none() {
+        return EnclaveReturn::SgxError;
+    }
+
+    EnclaveReturn::Success
+}
+
+pub struct GeolocationTime {
+    lat: f64,
+    lng: f64,
+    startTS: i32,
+    endTS: i32,
+    testResult: bool
+}
+
+pub fn geo_time_discretize(geo_time: &GeolocationTime) -> (u16, u16, u16){
+    if geo_time.lat < LAT_MIN || geo_time.lat >= LAT_MAX || geo_time.long < LAT_MIN || geo_time.long >= LAT_MAX || geo_time.endTS < SystemTime::now() - HEATMAP_TIMEFRAME {
+        (-1,-1,-1)
+    }
+
+    ((geo_time.lat - LAT_MIN)/GPS_SIDE_LENGTH as i16, (geo_time.long - LONG_MIN)/GPS_SIDE_LENGTH as i16, geo_time.endTS/TIMEFRAME_GRANULARITY/60)
+}
+
+pub fn update_heatmap_data_internal(
+    encryptedUserId: &[u8],
+    encryptedData: &[u8],
+    userPubKey: &PubKey,
+    dhKey: &DhKey, 
+    testResult: &u8
+    )  -> Result<(), EnclaveError> {
+
+    println!("Updating heatmap with new user data");
+
+    // Decrypt inputs using dhKey
+    let decrypted_userid = decrypt_userid(encryptedUserId, dhKey)?;
+    let decrypted_data = decrypt_data(encryptedData, dhKey)?;
+
+    // TODO: Should not panic, propagate error instead
+    let userid = match str::from_utf8(&decrypted_userid) {
+        Ok(v) => v,
+        Err(e) => panic!("Invalid UTF-8 sequence: {}", e),
+    }; 
+
+    // TODO: Access user test result and quit if negative
+    
+    let mut heatmap = HashMap::new((u16, u16, u16), u16);
+    let heatmap_path = "heatmap.dat";
+    if Path::new(heatmap_path).exists(){
+        let mut heatmap_log_out = [0u16; HEATMAP_SIZE];
+        load_sealed_data(&heatmap_path, heatmap_log_out);
+        let sealed_log = heatmap_log_out.as_mut_ptr();
+        let mut heatmap = recover_heatmapdata_for_serializable(sealed_log, HEATMAP_SIZE as u32)?;
+    }
+
+    let mut inputData: Vec<GeolocationTime> = serde_json::from_slice(&decrypted_data).unwrap();
+
+    for geo_time in inputData.iter(){
+        let bin = geo_time_discretize(geo_time);
+        let mut val = 0;
+        if heatmap.contains_key(bin){
+            let val = heatmap.get(bin);
+        }
+        heatmap.insert(bin, val + 1);
+    }
+
+    let mut sealed_log_in = [0u8; SEAL_LOG_SIZE];
+    create_heatmapdata_for_serializable(data, &mut sealed_log_in);
+    save_sealed_data(&heatmap_path, &sealed_log_in);
+
+    Ok(())
+}
+
+pub fn heatmap_o_call()  -> HashMap<(u16, u16, u16), u16> {
+
+    println!("Prunes old timestamps, returns masked heatmap");
+    
+    let mut heatmap = HashMap::new((u16, u16, u16), u16);
+    let heatmap_path = "heatmap.dat";
+    if Path::new(heatmap_path).exists(){
+        let mut heatmap_log_out = [0u16; HEATMAP_SIZE];
+        load_sealed_data(&heatmap_path, heatmap_log_out);
+        let sealed_log = heatmap_log_out.as_mut_ptr();
+        let mut heatmap = recover_heatmapdata_for_serializable(sealed_log, HEATMAP_SIZE as u32)?;
+    }
+
+    //Delete entries with old timestamps, save result
+    for (bin, val) in heatmap.iter(){
+        if bin.0 < SystemTime::now() - HEATMAP_TIMEFRAME{
+            heatmap.remove(bin);
+        }
+    }
+
+    let mut sealed_log_in = [0u8; SEAL_LOG_SIZE];
+    create_heatmapdata_for_serializable(data, &mut sealed_log_in);
+    save_sealed_data(&heatmap_path, &sealed_log_in);
+
+
+    //Delete entries with count < threshold, return
+    for (bin, val) in heatmap.iter(){
+        if val < HEATMAP_COUNT_THRESHOLD{
+            heatmap.remove(bin);
+        }
+    }
+
+    heatmap
+
+    Ok(())
 }

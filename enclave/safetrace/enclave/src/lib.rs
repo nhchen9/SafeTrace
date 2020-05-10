@@ -156,7 +156,7 @@ pub unsafe extern "C" fn ecall_add_personal_data(
     }
 
     let result = add_personal_data_internal(encryptedUserId, encryptedData, userPubKey, &io_key);
-
+    let result = add_heatmap_data_internal(encryptedUserId, encryptedData, userPubKey, &io_key);
     EnclaveReturn::Success
 }
 
