@@ -100,7 +100,7 @@ pub fn recover_sealeddata_for_serializable(sealed_log: * mut u8, sealed_log_size
     // println!("Length of encoded slice: {}", encoded_slice.len());
     // println!("Encoded slice: {:?}", encoded_slice);
     
-    let data: HashMap<tuple here, Vec<GeolocationTime>> = serde_json::from_slice(encoded_slice).unwrap();
+    let data: HashMap<String, Vec<GeolocationTime>> = serde_json::from_slice(encoded_slice).unwrap();
 
     Ok(data)
 }
@@ -285,7 +285,9 @@ pub const HEATMAP_SIZE: usize = 2 * HEATMAP_BIN_NUM;
 
 HEATMAP_COUNT_THRESHOLD = 2;
 
-pub fn recover_heatmapdata_for_serializable(sealed_log: * mut u8, sealed_log_size: u32) -> HashMap<(u16, u16, u16), Vec<GeolocationTime>>, Error> {
+
+//Same as recover_sealeddata_for_serializable, but with differen HashMap signature
+pub fn recover_heatmapdata_for_serializable(sealed_log: * mut u8, sealed_log_size: u32) -> HashMap<(u16, u16, u16), u16>, Error> {
     let sealed_data = from_sealed_log_for_slice::<u8>(sealed_log, sealed_log_size).ok_or(Error::SliceError)?;
     let unsealed_data = sealed_data.unseal_data().map_err(|err| Error::UnsealError(err))?;
     let encoded_slice = unsealed_data.get_decrypt_txt();
@@ -294,7 +296,9 @@ pub fn recover_heatmapdata_for_serializable(sealed_log: * mut u8, sealed_log_siz
     Ok(data)
 }
 
-pub fn create_heatmapdata_for_serializable(data: HashMap<(u16, u16, u16), u16, sealed_log_out: &mut [u8; SEAL_LOG_SIZE]) -> enigma_types::EnclaveReturn {
+
+//Same as create_sealeddata_for_serializable, but with differen HashMap signature
+pub fn create_heatmapdata_for_serializable(data: HashMap<(u16, u16, u16), u16>, sealed_log_out: &mut [u8; SEAL_LOG_SIZE]) -> enigma_types::EnclaveReturn {
 
     let encoded_vec = serde_json::to_vec(&data).unwrap();
     let encoded_slice = encoded_vec.as_slice();
@@ -318,22 +322,16 @@ pub fn create_heatmapdata_for_serializable(data: HashMap<(u16, u16, u16), u16, s
     EnclaveReturn::Success
 }
 
-pub struct GeolocationTime {
-    lat: f64,
-    lng: f64,
-    startTS: i32,
-    endTS: i32,
-    testResult: bool
-}
-
+//Helper function converting GeolocationTime struct to hashmap bin indices
 pub fn geo_time_discretize(geo_time: &GeolocationTime) -> (u16, u16, u16){
     if geo_time.lat < LAT_MIN || geo_time.lat >= LAT_MAX || geo_time.long < LAT_MIN || geo_time.long >= LAT_MAX || geo_time.endTS < SystemTime::now() - HEATMAP_TIMEFRAME {
         (-1,-1,-1)
     }
-
     ((geo_time.lat - LAT_MIN)/GPS_SIDE_LENGTH as i16, (geo_time.long - LONG_MIN)/GPS_SIDE_LENGTH as i16, geo_time.endTS/TIMEFRAME_GRANULARITY/60)
 }
 
+
+//Updating heatmap with new user data.  I have this called at the same time as add_personal_data_internal at lib.rs:159
 pub fn update_heatmap_data_internal(
     encryptedUserId: &[u8],
     encryptedData: &[u8],
@@ -342,13 +340,10 @@ pub fn update_heatmap_data_internal(
     testResult: &u8
     )  -> Result<(), EnclaveError> {
 
-    println!("Updating heatmap with new user data");
 
     // Decrypt inputs using dhKey
     let decrypted_userid = decrypt_userid(encryptedUserId, dhKey)?;
     let decrypted_data = decrypt_data(encryptedData, dhKey)?;
-
-    // TODO: Should not panic, propagate error instead
     let userid = match str::from_utf8(&decrypted_userid) {
         Ok(v) => v,
         Err(e) => panic!("Invalid UTF-8 sequence: {}", e),
@@ -383,9 +378,8 @@ pub fn update_heatmap_data_internal(
     Ok(())
 }
 
+//Prunes old timestamps, returns masked heatmap
 pub fn heatmap_o_call()  -> HashMap<(u16, u16, u16), u16> {
-
-    println!("Prunes old timestamps, returns masked heatmap");
     
     let mut heatmap = HashMap::new((u16, u16, u16), u16);
     let heatmap_path = "heatmap.dat";
